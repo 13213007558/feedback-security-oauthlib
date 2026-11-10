@@ -4,6 +4,16 @@ Changelog
 Unreleased:
 ------------------
 OAuth2.0 Provider:
+* New optional ``AtomicRefreshTokenStore`` contract for the Refresh Token
+  Grant: validators inheriting it consume the old refresh token and persist
+  its successor (including token modifiers) in one atomic commit via
+  ``rotate_refresh_token_atomic``, so concurrent requests can no longer both
+  pass validation. Reuse of a consumed token triggers the store's explicit
+  replay policy (token family revocation) without affecting other users, and
+  rejections never reveal family identifiers or token plaintext. Validators
+  that do not opt in keep the historical behavior. See
+  ``examples/atomic_refresh_token_rotation.py`` for a runnable SQLite
+  in-memory example.
 * **Breaking**: #988: PKCE parameters are now validated against RFC 7636
   syntax. ``code_verifier`` must be 43-128 unreserved ASCII characters
   (``[A-Za-z0-9-._~]``) at the token endpoint (rejected with ``invalid_grant``)

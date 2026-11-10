@@ -63,7 +63,7 @@ from .rfc6749.grant_types import (
     RefreshTokenGrant,
     ResourceOwnerPasswordCredentialsGrant,
 )
-from .rfc6749.request_validator import RequestValidator
+from .rfc6749.request_validator import AtomicRefreshTokenStore, RequestValidator
 from .rfc6749.tokens import BearerToken, OAuth2Token
 from .rfc6749.utils import is_secure_transport
 from .rfc8628.clients import DeviceClient

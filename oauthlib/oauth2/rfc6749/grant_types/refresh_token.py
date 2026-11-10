@@ -6,6 +6,7 @@ import json
 import logging
 
 from .. import errors, utils
+from ..request_validator import AtomicRefreshTokenStore
 from .base import GrantTypeBase
 from oauthlib.common import log_safe
 
@@ -60,13 +61,33 @@ class RefreshTokenGrant(GrantTypeBase):
             headers.update(e.headers)
             return headers, e.json, e.status_code
 
-        token = token_handler.create_token(request,
-                                           refresh_token=self.issue_new_refresh_tokens)
+        if isinstance(self.request_validator, AtomicRefreshTokenStore):
+            # The store consumes the old refresh token and persists its
+            # successor (including token modifiers) in one atomic commit,
+            # so concurrent requests cannot both pass validation and a
+            # generator/modifier failure cannot strand a consumed token.
+            def token_factory(request):
+                token = token_handler.create_token(
+                    request, refresh_token=self.issue_new_refresh_tokens)
+                for modifier in self._token_modifiers:
+                    token = modifier(token, token_handler, request)
+                return token
 
-        for modifier in self._token_modifiers:
-            token = modifier(token, token_handler, request)
+            try:
+                token = self.request_validator.rotate_refresh_token_atomic(
+                    request, token_factory)
+            except errors.OAuth2Error as e:
+                log.debug('Atomic refresh token rotation failed, %s.', e)
+                headers.update(e.headers)
+                return headers, e.json, e.status_code
+        else:
+            token = token_handler.create_token(request,
+                                               refresh_token=self.issue_new_refresh_tokens)
 
-        self.request_validator.save_token(token, request)
+            for modifier in self._token_modifiers:
+                token = modifier(token, token_handler, request)
+
+            self.request_validator.save_token(token, request)
 
         log.debug('Issuing new token to client id %r (%r), %r.',
                   request.client_id, request.client, log_safe(token))
@@ -99,13 +120,18 @@ class RefreshTokenGrant(GrantTypeBase):
         self.validate_grant_type(request)
 
         # REQUIRED. The refresh token issued to the client.
-        log.debug('Validating refresh token %s for client %r.',
-                  log_safe(request.refresh_token), request.client)
-        if not self.request_validator.validate_refresh_token(
-                request.refresh_token, request.client, request):
-            log.debug('Invalid refresh token, %s, for client %r.',
+        # An AtomicRefreshTokenStore performs the authoritative check inside
+        # its atomic consume-and-replace commit instead, so that a replayed
+        # (already consumed) token reaches the store's replay policy rather
+        # than being rejected here without further action.
+        if not isinstance(self.request_validator, AtomicRefreshTokenStore):
+            log.debug('Validating refresh token %s for client %r.',
                       log_safe(request.refresh_token), request.client)
-            raise errors.InvalidGrantError(request=request)
+            if not self.request_validator.validate_refresh_token(
+                    request.refresh_token, request.client, request):
+                log.debug('Invalid refresh token, %s, for client %r.',
+                          log_safe(request.refresh_token), request.client)
+                raise errors.InvalidGrantError(request=request)
 
         original_scopes = utils.scope_to_list(
             self.request_validator.get_original_scopes(

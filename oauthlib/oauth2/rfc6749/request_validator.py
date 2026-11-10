@@ -694,3 +694,78 @@ class RequestValidator:
 
         """
         return False
+
+
+class AtomicRefreshTokenStore:
+    """Optional storage contract for atomic refresh token rotation.
+
+    Mix this class into a :class:`RequestValidator` implementation to make
+    the Refresh Token Grant consume the presented refresh token and persist
+    its successor in a single atomic commit, instead of the default
+    non-atomic ``validate_refresh_token`` / ``save_token`` sequence during
+    which two concurrent requests can both pass validation.
+
+    Implementations enabling this mode MUST override
+    :meth:`rotate_refresh_token_atomic`; the base implementation raises
+    :exc:`NotImplementedError` so a partially implemented store fails
+    loudly instead of silently skipping persistence.
+
+    When this mode is active the grant does not call
+    ``validate_refresh_token`` at all: every check on the presented token,
+    including replay detection, happens inside
+    :meth:`rotate_refresh_token_atomic` so that a replayed token reaches
+    the store's replay policy.
+
+    Validators that do not inherit from this class keep the historical
+    behavior unchanged.
+
+    .. note::
+        In deployments spanning multiple processes or hosts, the atomicity
+        and replay-detection guarantees MUST be enforced by the storage
+        layer itself (e.g. a database transaction with a conditional
+        ``UPDATE`` or a unique constraint). In-process locks only
+        serialize threads of a single process and are not sufficient on
+        their own.
+    """
+
+    def rotate_refresh_token_atomic(self, request, token_factory):
+        """Atomically consume the presented refresh token and store its successor.
+
+        This method is called by the Refresh Token Grant after the request
+        passed the regular (non-consuming) validations. It MUST, within a
+        single atomic commit:
+
+        1. Re-verify that ``request.refresh_token`` exists, belongs to
+           ``request.client_id``, and is neither consumed nor revoked.
+        2. Mark the presented refresh token as consumed.
+        3. Call ``token_factory(request)`` to create the successor token
+           (this runs the token generators and any registered token
+           modifiers) and persist it, linked to the same token family as
+           the consumed token.
+
+        If ``token_factory`` or any persistence step raises, the whole
+        operation MUST be rolled back: the presented token MUST NOT be
+        left consumed without a persisted successor.
+
+        Only one of any number of concurrent calls presenting the same
+        refresh token may commit successfully. If the presented token was
+        already consumed (a replay), the implementation MUST apply its
+        explicit replay policy - revoking every token of the same token
+        family, and only that family - and MUST raise
+        :class:`oauthlib.oauth2.rfc6749.errors.InvalidGrantError`. The
+        replay response and any log output MUST NOT reveal token family
+        identifiers or token plaintext.
+
+        :param request: OAuthlib request.
+        :type request: oauthlib.common.Request
+        :param token_factory: Callable taking the request and returning
+                              the successor token dict. MUST be invoked
+                              inside the atomic operation so that a
+                              generator or token modifier failure aborts
+                              the commit.
+        :rtype: The token dict produced by ``token_factory``.
+
+        Method is used by:
+            - Refresh Token Grant
+        """
+        raise NotImplementedError('Subclasses must implement this method.')
