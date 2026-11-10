@@ -36,6 +36,7 @@ class Server(
         token_expires_in=None,
         token_generator=None,
         refresh_token_generator=None,
+        issuer=None,
         *args,
         **kwargs,
     ):
@@ -49,10 +50,14 @@ class Server(
         :param token_generator: A function to generate a token from a request.
         :param refresh_token_generator: A function to generate a token from a
                                         request for the refresh token.
+        :param issuer: Trusted RFC 9207 authorization server issuer
+                       identifier (HTTPS URL without query or fragment).
+                       When set, the authorization code grant adds an ``iss``
+                       parameter to every authorization redirect.
         :param kwargs: Extra parameters to pass to authorization-,
                        token-, resource-, and revocation-endpoint constructors.
         """
-        self.auth_grant = AuthorizationCodeGrant(request_validator)
+        self.auth_grant = AuthorizationCodeGrant(request_validator, issuer=issuer)
         self.implicit_grant = ImplicitGrant(request_validator)
         self.password_grant = ResourceOwnerPasswordCredentialsGrant(request_validator)
         self.credentials_grant = ClientCredentialsGrant(request_validator)
@@ -104,6 +109,7 @@ class WebApplicationServer(
         token_generator=None,
         token_expires_in=None,
         refresh_token_generator=None,
+        issuer=None,
         **kwargs,
     ):
         """Construct a new web application server.
@@ -116,10 +122,14 @@ class WebApplicationServer(
         :param token_generator: A function to generate a token from a request.
         :param refresh_token_generator: A function to generate a token from a
                                         request for the refresh token.
+        :param issuer: Trusted RFC 9207 authorization server issuer
+                       identifier (HTTPS URL without query or fragment).
+                       When set, the authorization code grant adds an ``iss``
+                       parameter to every authorization redirect.
         :param kwargs: Extra parameters to pass to authorization-,
                        token-, resource-, and revocation-endpoint constructors.
         """
-        self.auth_grant = AuthorizationCodeGrant(request_validator)
+        self.auth_grant = AuthorizationCodeGrant(request_validator, issuer=issuer)
         self.refresh_grant = RefreshTokenGrant(request_validator)
         self.bearer = BearerToken(
             request_validator, token_generator, token_expires_in, refresh_token_generator

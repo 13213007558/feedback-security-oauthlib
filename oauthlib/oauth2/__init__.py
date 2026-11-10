@@ -35,6 +35,7 @@ from .rfc6749.errors import (
     InvalidClientIdError,
     InvalidGrantError,
     InvalidRedirectURIError,
+    InvalidIssuerError,
     InvalidRequestError,
     InvalidRequestFatalError,
     InvalidScopeError,

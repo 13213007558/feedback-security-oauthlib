@@ -78,3 +78,31 @@ def is_secure_transport(uri):
     if os.environ.get('OAUTHLIB_INSECURE_TRANSPORT'):
         return True
     return uri.lower().startswith('https://')
+
+
+def is_valid_issuer(issuer):
+    """Validate an authorization server issuer identifier per RFC 9207.
+
+    The issuer is a URL using the ``https`` scheme, without query or
+    fragment components. Unlike :func:`is_secure_transport`, this check is
+    not affected by the ``OAUTHLIB_INSECURE_TRANSPORT`` environment
+    variable: the issuer is derived from trusted server configuration and
+    must always be an HTTPS URL.
+
+    :param issuer: The configured authorization server issuer identifier.
+    :type issuer: str
+    :returns: ``True`` when the issuer is an HTTPS URL with neither a query
+              nor a fragment component.
+    :rtype: bool
+
+    See `RFC 9207 Section 2.1`_.
+
+    .. _`RFC 9207 Section 2.1`: https://www.rfc-editor.org/rfc/rfc9207.html#section-2.1
+    """
+    if not isinstance(issuer, str):
+        return False
+    parsed = urlparse(issuer)
+    return (parsed.scheme == 'https'
+            and bool(parsed.netloc)
+            and not parsed.query
+            and not parsed.fragment)

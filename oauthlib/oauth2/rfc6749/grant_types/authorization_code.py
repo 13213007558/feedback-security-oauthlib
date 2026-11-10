@@ -12,6 +12,7 @@ import re
 from oauthlib import common
 
 from .. import errors
+from ..utils import is_valid_issuer
 from .base import GrantTypeBase, revalidate_response_mode
 
 log = logging.getLogger(__name__)
@@ -191,6 +192,29 @@ class AuthorizationCodeGrant(GrantTypeBase):
         'S256': code_challenge_method_s256
     }
 
+    def __init__(self, request_validator=None, issuer=None, **kwargs):
+        """Configure the authorization code grant.
+
+        :param request_validator: An implementation of
+                                  :class:`oauthlib.oauth2.RequestValidator`.
+        :param issuer: Trusted authorization server issuer identifier as
+                       defined by `RFC 9207 Section 2.1`_. When set, every
+                       redirect from the authorization endpoint (both
+                       success and redirectable error responses) includes an
+                       ``iss`` parameter with this exact value. The value
+                       comes from trusted server configuration, never from
+                       the authorization request, and must be an HTTPS URL
+                       without query or fragment components.
+
+        .. _`RFC 9207 Section 2.1`: https://www.rfc-editor.org/rfc/rfc9207.html#section-2.1
+        """
+        super().__init__(request_validator, **kwargs)
+        if issuer is not None and not is_valid_issuer(issuer):
+            raise ValueError(
+                'issuer must be an HTTPS URL without query or fragment '
+                'components, got %r' % (issuer,))
+        self.issuer = issuer
+
     def create_authorization_code(self, request):
         """
         Generates an authorization grant represented as a dictionary.
@@ -300,10 +324,17 @@ class AuthorizationCodeGrant(GrantTypeBase):
             # Never redirect using an unsupported response mode.
             self._validate_response_mode(request)
             request.redirect_uri = request.redirect_uri or self.error_uri
+            # RFC 9207 Section 2.1: the same issuer is appended to the
+            # redirectable error response. The redirect_uri has already
+            # passed the registered-URI checks above, so no request value
+            # is reflected.
+            params = list(e.twotuples)
+            if self.issuer is not None:
+                params.append(('iss', self.issuer))
             # Unlike the implicit grant, fall back to the query for response
             # modes other than "query" and "fragment".
             redirect_uri = common.add_params_to_uri(
-                request.redirect_uri, e.twotuples,
+                request.redirect_uri, params,
                 fragment=request.response_mode == "fragment")
             return {'Location': redirect_uri}, None, 302
 
@@ -317,6 +348,13 @@ class AuthorizationCodeGrant(GrantTypeBase):
         log.debug('Saving grant %r for %r.', grant, request)
         self.request_validator.save_authorization_code(
             request.client_id, grant, request)
+        # RFC 9207 Section 2.1: identify the authorization server in the
+        # redirect. The value is trusted configuration, never a request
+        # parameter. It is added after the grant is persisted so it is only
+        # part of the redirect; response_type "none" discards it together
+        # with the code in prepare_authorization_response().
+        if self.issuer is not None:
+            grant['iss'] = self.issuer
         return self.prepare_authorization_response(
             request, grant, {}, None, 302)
 
@@ -477,6 +515,10 @@ class AuthorizationCodeGrant(GrantTypeBase):
             'state': request.state,
             'request': request
         })
+        # RFC 9207: expose the trusted issuer that will identify this
+        # authorization server in the redirect response.
+        if self.issuer is not None:
+            request_info['issuer'] = self.issuer
 
         for validator in self.custom_validators.post_auth:
             request_info.update(validator(request))

@@ -40,6 +40,23 @@ OAuth2.0 Provider:
   validation when omitted, and implicit grant errors use the query when the
   ``response_mode`` is ``query``, requested or the grant's default, instead
   of always using the fragment.
+* RFC 9207: ``AuthorizationCodeGrant`` (and the pre-configured ``Server`` /
+  ``WebApplicationServer`` via a new ``issuer`` argument) now appends an
+  ``iss`` parameter to every authorization redirect, including redirectable
+  error responses. The issuer comes from trusted configuration and must be an
+  HTTPS URL without query or fragment; an invalid value raises ``ValueError``
+  at construction time and request parameters can never override it.
+
+OAuth2.0 Client:
+* RFC 9207: ``WebApplicationClient.parse_request_uri_response`` and
+  ``parse_authorization_code_response`` accept an optional per-transaction
+  ``expected_issuer``. When provided, a missing, duplicated or mismatching
+  ``iss`` raises the new ``InvalidIssuerError`` before ``state`` or OAuth
+  error handling, using an exact string comparison over the once form-decoded
+  value (no normalization of trailing slashes, paths or case). Duplicated
+  ``state``, ``code`` or ``error`` parameters are now rejected before the
+  response is converted to a dict. Any failure leaves client state untouched;
+  calls without ``expected_issuer`` keep their previous behavior.
 
 Misc:
 * #794: Recommend Authorization Code + PKCE instead of Implicit Grant for public clients.

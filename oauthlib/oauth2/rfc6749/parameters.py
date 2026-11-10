@@ -15,8 +15,9 @@ from oauthlib.common import add_params_to_qs, add_params_to_uri
 from oauthlib.signals import scope_changed
 
 from .errors import (
-    InsecureTransportError, MismatchingStateError, MissingCodeError,
-    MissingTokenError, MissingTokenTypeError, raise_from_error,
+    InsecureTransportError, InvalidIssuerError, InvalidRequestError,
+    MismatchingStateError, MissingCodeError, MissingTokenError,
+    MissingTokenTypeError, raise_from_error,
 )
 from .tokens import OAuth2Token
 from .utils import is_secure_transport, list_to_scope, scope_to_list
@@ -228,7 +229,7 @@ def prepare_token_revocation_request(url, token, token_type_hint="access_token",
     return url, headers, add_params_to_qs(body, params)
 
 
-def parse_authorization_code_response(uri, state=None):
+def parse_authorization_code_response(uri, state=None, expected_issuer=None):
     """Parse authorization grant response URI into a dict.
 
     If the resource owner grants the access request, the authorization
@@ -255,6 +256,17 @@ def parse_authorization_code_response(uri, state=None):
 
     :param uri: The full redirect URL back to the client.
     :param state: The state parameter from the authorization request.
+    :param expected_issuer: The issuer identifier the caller saved when
+                            starting this authorization transaction, per
+                            `RFC 9207 Section 2.2`_. When provided, the
+                            response must contain exactly one ``iss``
+                            parameter whose value, decoded once as a form
+                            value, matches this string exactly (no
+                            normalization of trailing slashes, paths or
+                            case). The value must be supplied per
+                            transaction rather than stored globally on a
+                            shared client, so that responses from two
+                            authorization servers cannot be mixed up.
 
     For example, the authorization server redirects the user-agent by
     sending the following HTTP response:
@@ -265,12 +277,36 @@ def parse_authorization_code_response(uri, state=None):
         Location: https://client.example.com/cb?code=SplxlOBeZQQYbYS6WxSbIA
                 &state=xyz
 
+    .. _`RFC 9207 Section 2.2`: https://www.rfc-editor.org/rfc/rfc9207.html#section-2.2
     """
     if not is_secure_transport(uri):
         raise InsecureTransportError()
 
     query = urlparse.urlparse(uri).query
-    params = dict(urlparse.parse_qsl(query))
+    # Decode the query exactly once using the form rules and inspect the
+    # raw tuples before collapsing them into a dict, so that duplicated
+    # parameters are rejected instead of different components silently
+    # picking different values.
+    tuples = urlparse.parse_qsl(query, keep_blank_values=True)
+    key_counts = {}
+    for key, _value in tuples:
+        key_counts[key] = key_counts.get(key, 0) + 1
+    for key in ('state', 'code', 'error'):
+        if key_counts.get(key, 0) > 1:
+            raise InvalidRequestError(
+                description='Duplicate %s parameter in authorization response.' % key)
+    params = dict(tuples)
+
+    if expected_issuer is not None:
+        # RFC 9207 Section 2.2: the issuer is checked before state and
+        # before interpreting OAuth errors, and the comparison is an exact
+        # string match over the once-decoded form value.
+        if key_counts.get('iss', 0) != 1:
+            raise InvalidIssuerError(
+                description='The "iss" parameter is missing or duplicated.')
+        if params['iss'] != expected_issuer:
+            raise InvalidIssuerError(
+                description='The "iss" parameter does not match the expected issuer.')
 
     if state and params.get('state') != state:
         raise MismatchingStateError()

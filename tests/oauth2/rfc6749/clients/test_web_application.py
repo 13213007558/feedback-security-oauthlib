@@ -135,6 +135,70 @@ class WebApplicationClientTest(TestCase):
                 self.response_uri,
                 state="invalid")
 
+    issuer = 'https://as.example/tenant/1'
+    response_uri_iss = (
+        'https://client.example.com/cb?code=zzzzaaaa&state=xyz'
+        '&iss=https%3A%2F%2Fas.example%2Ftenant%2F1')
+
+    def test_parse_grant_uri_response_with_expected_issuer(self):
+        client = WebApplicationClient(self.client_id)
+        response = client.parse_request_uri_response(
+            self.response_uri_iss, state=self.state, expected_issuer=self.issuer)
+        self.assertEqual(response['iss'], self.issuer)
+        self.assertEqual(client.code, self.code)
+
+    def test_parse_grant_uri_response_iss_failures_leave_state_untouched(self):
+        bad_uris = {
+            'missing': self.response_uri,
+            'duplicate': self.response_uri_iss + '&iss=' + self.response_uri_iss.split('iss=')[1],
+            'mismatch': self.response_uri_iss.replace(
+                'as.example%2Ftenant%2F1', 'other.example%2F'),
+        }
+        for label, uri in bad_uris.items():
+            client = WebApplicationClient(self.client_id)
+            with self.subTest(label=label):
+                self.assertRaises(
+                    errors.InvalidIssuerError,
+                    client.parse_request_uri_response, uri,
+                    state=self.state, expected_issuer=self.issuer)
+                self.assertIsNone(client.code)
+                self.assertIsNone(client.access_token)
+                self.assertIsNone(client.refresh_token)
+
+    def test_parse_grant_uri_response_duplicate_params_leave_state_untouched(self):
+        for name, uri in {
+            'code': 'https://client.example.com/cb?code=a&code=b&state=xyz',
+            'state': 'https://client.example.com/cb?code=a&state=xyz&state=other',
+        }.items():
+            client = WebApplicationClient(self.client_id)
+            with self.subTest(name=name):
+                self.assertRaises(
+                    errors.InvalidRequestError,
+                    client.parse_request_uri_response, uri, state='xyz')
+                self.assertIsNone(client.code)
+
+    def test_expected_issuer_is_per_call_not_shared_state(self):
+        # The same shared client handles two different issuers via per-call
+        # expected_issuer; nothing is stored on the client instance.
+        client = WebApplicationClient(self.client_id)
+        other = 'https://other.example/'
+        other_uri = ('https://client.example.com/cb?code=zzzzaaaa&state=xyz'
+                     '&iss=https%3A%2F%2Fother.example%2F')
+        client.parse_request_uri_response(
+            other_uri, state=self.state, expected_issuer=other)
+        self.assertFalse(hasattr(client, 'issuer'))
+        self.assertFalse(hasattr(client, 'expected_issuer'))
+        self.assertRaises(
+            errors.InvalidIssuerError, client.parse_request_uri_response,
+            other_uri, state=self.state, expected_issuer=self.issuer)
+
+    def test_legacy_call_without_expected_issuer_ignores_iss(self):
+        client = WebApplicationClient(self.client_id)
+        response = client.parse_request_uri_response(
+            self.response_uri_iss, state=self.state)
+        self.assertEqual(response['code'], self.code)
+        self.assertEqual(client.code, self.code)
+
     def test_populate_attributes(self):
 
         client = WebApplicationClient(self.client_id)

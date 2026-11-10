@@ -234,6 +234,101 @@ class ParameterTests(TestCase):
         self.assertRaises(MismatchingStateError, parse_authorization_code_response,
                 self.error_wrongstate, state=self.state)
 
+    issuer = 'https://as.example/tenant/1'
+    issuer_encoded = 'https%3A%2F%2Fas.example%2Ftenant%2F1'
+    grant_response_iss = (
+        'https://client.example.com/cb?code=SplxlOBeZQQYbYS6WxSbIA'
+        '&state=xyz&iss=' + issuer_encoded)
+
+    def test_grant_response_expected_issuer(self):
+        params = parse_authorization_code_response(
+            self.grant_response_iss, expected_issuer=self.issuer)
+        self.assertEqual(params['iss'], self.issuer)
+        self.assertEqual(params['code'], 'SplxlOBeZQQYbYS6WxSbIA')
+        # State is still checked alongside the issuer.
+        self.assertRaises(
+            MismatchingStateError, parse_authorization_code_response,
+            self.grant_response_iss, state='other', expected_issuer=self.issuer)
+
+    def test_grant_response_iss_missing(self):
+        self.assertRaises(
+            InvalidIssuerError, parse_authorization_code_response,
+            self.grant_response, expected_issuer=self.issuer)
+
+    def test_grant_response_iss_mismatch(self):
+        for other in (
+            'https://as.example/tenant/2',
+            'https://as.example/tenant/1/',
+            'HTTPS://as.example/tenant/1',
+            'https://as.example/tenant',
+        ):
+            uri = self.grant_response_iss.replace(
+                self.issuer_encoded, other.replace('/', '%2F').replace(':', '%3A'))
+            with self.subTest(other=other):
+                self.assertRaises(
+                    InvalidIssuerError, parse_authorization_code_response,
+                    uri, expected_issuer=self.issuer)
+
+    def test_grant_response_duplicate_iss(self):
+        uri = self.grant_response_iss + '&iss=' + self.issuer_encoded
+        self.assertRaises(
+            InvalidIssuerError, parse_authorization_code_response,
+            uri, expected_issuer=self.issuer)
+
+    def test_grant_response_duplicate_params_rejected_before_dict(self):
+        base = self.grant_response_iss
+        duplicates = {
+            'code': 'code=SplxlOBeZQQYbYS6WxSbIA&code=second',
+            'state': 'state=xyz&state=abc',
+            'error': 'error=access_denied&error=invalid_request',
+        }
+        for name, replacement in duplicates.items():
+            original = {
+                'code': 'code=SplxlOBeZQQYbYS6WxSbIA',
+                'state': 'state=xyz',
+                'error': '',
+            }[name]
+            uri = base
+            if original:
+                uri = uri.replace(original, replacement)
+            else:
+                uri += '&' + replacement
+            with self.subTest(name=name):
+                self.assertRaises(
+                    InvalidRequestError, parse_authorization_code_response,
+                    uri, expected_issuer=self.issuer)
+
+    def test_grant_response_duplicate_params_rejected_without_expected_issuer(self):
+        # Duplicate detection is not gated on RFC 9207 opt-in.
+        uri = 'https://client.example.com/cb?code=a&code=b&state=xyz'
+        self.assertRaises(
+            InvalidRequestError, parse_authorization_code_response, uri)
+
+    def test_grant_response_iss_checked_before_oauth_error(self):
+        # An OAuth error with a wrong iss must surface as an issuer failure,
+        # not as the (possibly application-handled) OAuth error.
+        uri = ('https://client.example.com/cb?error=access_denied&state=xyz'
+               '&iss=https%3A%2F%2Fother.example%2F')
+        self.assertRaises(
+            InvalidIssuerError, parse_authorization_code_response,
+            uri, expected_issuer=self.issuer)
+
+    def test_grant_response_error_with_matching_issuer_raises_oauth_error(self):
+        uri = ('https://client.example.com/cb?error=access_denied&state=xyz'
+               '&iss=' + self.issuer_encoded)
+        self.assertRaises(
+            AccessDeniedError, parse_authorization_code_response,
+            uri, state=self.state, expected_issuer=self.issuer)
+
+    def test_grant_response_iss_form_decoded_once(self):
+        # Percent-encoding is resolved by the form decoder and then compared
+        # as an exact string; the value carries no literal "%2F" afterwards.
+        uri = ('https://client.example.com/cb?code=c&state=xyz'
+               '&iss=https%253A%252F%252Fas.example%252Ftenant%252F1')
+        self.assertRaises(
+            InvalidIssuerError, parse_authorization_code_response,
+            uri, expected_issuer=self.issuer)
+
     def test_implicit_token_response(self):
         """Verify correct parameter parsing and validation for implicit responses."""
         self.assertEqual(parse_implicit_response(self.implicit_response),

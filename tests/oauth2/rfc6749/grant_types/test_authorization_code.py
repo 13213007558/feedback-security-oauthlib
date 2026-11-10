@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+import urllib.parse as urlparse
 from unittest import mock
 
 from oauthlib.common import Request
@@ -114,6 +115,109 @@ class AuthorizationCodeGrantTest(TestCase):
         self.request.response_mode = 'fragment'
         h, _b, _s = self.auth.create_authorization_response(self.request, bearer)
         self.assertURLEqual(h['Location'], 'https://a.b/cb#code=abc')
+
+    def test_invalid_issuer_configuration_rejected(self):
+        for invalid in (
+            'http://as.example/',
+            'https://as.example/?query=1',
+            'https://as.example/#fragment',
+            'ftp://as.example/',
+            'not-a-url',
+            1234,
+        ):
+            with self.subTest(invalid=invalid):
+                self.assertRaises(
+                    ValueError, AuthorizationCodeGrant,
+                    request_validator=self.mock_validator, issuer=invalid)
+
+    def test_valid_issuer_configuration_accepted(self):
+        grant = AuthorizationCodeGrant(
+            request_validator=self.mock_validator,
+            issuer='https://as.example/')
+        self.assertEqual(grant.issuer, 'https://as.example/')
+
+    @mock.patch('oauthlib.common.generate_token')
+    def test_issuer_added_to_success_redirect(self, generate_token):
+        generate_token.return_value = 'abc'
+        bearer = BearerToken(self.mock_validator)
+        self.auth = AuthorizationCodeGrant(
+            request_validator=self.mock_validator,
+            issuer='https://as.example/')
+        self.request.response_mode = 'query'
+        h, _b, s = self.auth.create_authorization_response(self.request, bearer)
+        self.assertEqual(s, 302)
+        self.assertURLEqual(
+            h['Location'],
+            'https://a.b/cb?code=abc&iss=https%3A%2F%2Fas.example%2F')
+        # The same value is used verbatim, including a non-normalized path.
+        self.auth = AuthorizationCodeGrant(
+            request_validator=self.mock_validator,
+            issuer='https://as.example/tenant/1')
+        h, _b, _s = self.auth.create_authorization_response(self.request, bearer)
+        params = dict(Request(h['Location']).uri_query_params)
+        self.assertEqual(params['iss'], 'https://as.example/tenant/1')
+
+    @mock.patch('oauthlib.common.generate_token')
+    def test_issuer_follows_response_mode(self, generate_token):
+        generate_token.return_value = 'abc'
+        bearer = BearerToken(self.mock_validator)
+        self.auth = AuthorizationCodeGrant(
+            request_validator=self.mock_validator,
+            issuer='https://as.example/')
+        self.request.response_mode = 'fragment'
+        h, _b, _s = self.auth.create_authorization_response(self.request, bearer)
+        self.assertTrue(h['Location'].startswith('https://a.b/cb#'))
+        fragment = dict(urlparse.parse_qsl(
+            urlparse.urlparse(h['Location']).fragment))
+        self.assertEqual(fragment['iss'], 'https://as.example/')
+        self.assertEqual(fragment['code'], 'abc')
+
+    def test_issuer_added_to_redirectable_error(self):
+        self.mock_validator.validate_scopes.return_value = False
+        bearer = BearerToken(self.mock_validator)
+        self.auth = AuthorizationCodeGrant(
+            request_validator=self.mock_validator,
+            issuer='https://as.example/')
+        h, _b, s = self.auth.create_authorization_response(self.request, bearer)
+        self.assertEqual(s, 302)
+        params = dict(Request(h['Location']).uri_query_params)
+        self.assertEqual(params['error'], 'invalid_scope')
+        self.assertEqual(params['iss'], 'https://as.example/')
+
+    def test_issuer_not_reflected_from_request(self):
+        # A request-supplied "iss" must never be used; only the configured one.
+        bearer = BearerToken(self.mock_validator)
+        self.auth = AuthorizationCodeGrant(
+            request_validator=self.mock_validator,
+            issuer='https://trusted.example/')
+        request = Request('http://a.b/path?iss=https%3A%2F%2Fevil.example%2F')
+        request.scopes = ('hello', 'world')
+        request.client = 'batman'
+        request.client_id = 'abcdef'
+        request.code = '1234'
+        request.response_type = 'code'
+        request.grant_type = 'authorization_code'
+        request.redirect_uri = 'https://a.b/cb'
+        request.response_mode = 'query'
+        h, _b, _s = self.auth.create_authorization_response(request, bearer)
+        params = dict(Request(h['Location']).uri_query_params)
+        self.assertEqual(params['iss'], 'https://trusted.example/')
+
+    def test_issuer_exposed_in_request_info(self):
+        self.auth = AuthorizationCodeGrant(
+            request_validator=self.mock_validator,
+            issuer='https://as.example/')
+        _scopes, request_info = self.auth.validate_authorization_request(self.request)
+        self.assertEqual(request_info['issuer'], 'https://as.example/')
+
+    def test_no_issuer_without_configuration(self):
+        bearer = BearerToken(self.mock_validator)
+        self.request.response_mode = 'query'
+        h, _b, _s = self.auth.create_authorization_response(self.request, bearer)
+        params = dict(Request(h['Location']).uri_query_params)
+        self.assertNotIn('iss', params)
+        _scopes, request_info = self.auth.validate_authorization_request(self.request)
+        self.assertNotIn('issuer', request_info)
 
     def test_create_token_response(self):
         bearer = BearerToken(self.mock_validator)

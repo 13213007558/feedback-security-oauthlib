@@ -128,6 +128,20 @@ class MismatchingStateError(OAuth2Error):
     description = 'CSRF Warning! State not equal in request and response.'
 
 
+class InvalidIssuerError(OAuth2Error):
+    """Raised when the RFC 9207 "iss" response parameter cannot be matched.
+
+    The authorization response is missing the "iss" parameter, includes it
+    more than once, or its value does not exactly match the
+    ``expected_issuer`` the client saved for this authorization transaction.
+    See `RFC 9207 Section 2.2`_.
+
+    .. _`RFC 9207 Section 2.2`: https://www.rfc-editor.org/rfc/rfc9207.html#section-2.2
+    """
+    error = 'invalid_issuer'
+    description = 'The "iss" parameter is missing, duplicated, or does not match the expected issuer.'
+
+
 class MissingCodeError(OAuth2Error):
     error = 'missing_code'
 
