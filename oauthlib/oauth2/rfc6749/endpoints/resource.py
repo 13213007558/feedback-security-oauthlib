@@ -41,10 +41,11 @@ class ResourceEndpoint(BaseEndpoint):
         access_token=sdf23409df   # Body
     """
 
-    def __init__(self, default_token, token_types):
+    def __init__(self, default_token, token_types, strict_bearer=False):
         BaseEndpoint.__init__(self)
         self._tokens = token_types
         self._default_token = default_token
+        self._strict_bearer = strict_bearer
 
     @property
     def default_token(self):
@@ -58,11 +59,29 @@ class ResourceEndpoint(BaseEndpoint):
     def tokens(self):
         return self._tokens
 
+    @property
+    def strict_bearer(self):
+        """Whether ambiguous Bearer credentials are rejected up front.
+
+        When enabled, the request is rejected with an ``invalid_request``
+        error before token validation whenever an access token is presented
+        in more than one carrier (header, query or form body), a carrier
+        contains the parameter more than once, or a form-body carrier is used
+        with a disallowed method or content type. When disabled (the default)
+        the historical lenient extraction behaviour is preserved.
+        """
+        return self._strict_bearer
+
+    @strict_bearer.setter
+    def strict_bearer(self, strict_bearer):
+        self._strict_bearer = bool(strict_bearer)
+
     @catch_errors_and_unavailability
     def verify_request(self, uri, http_method='GET', body=None, headers=None,
                        scopes=None):
         """Validate client, code etc, return body + headers"""
         request = Request(uri, http_method, body, headers)
+        request.strict_bearer = self.strict_bearer
         request.token_type = self.find_token_type(request)
         request.scopes = scopes
         token_type_handler = self.tokens.get(request.token_type,

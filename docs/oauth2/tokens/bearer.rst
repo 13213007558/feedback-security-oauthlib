@@ -121,3 +121,16 @@ declare your own Endpoints and use the `BearerToken` API as below.
 
 .. autoclass:: oauthlib.oauth2.BearerToken
     :members:
+
+4. Strict token extraction
+--------------------------
+
+A request may present a Bearer token in the ``Authorization`` header, the form
+body or the URI query. Resource endpoints can be created with
+``strict_bearer=True`` (or the flag toggled via ``server.strict_bearer``) to
+reject requests that present credentials in more than one carrier, repeat the
+``access_token`` parameter within a carrier, misuse the form-body carrier, or
+send an empty/malformed ``Bearer`` header. Rejection happens with the standard
+``invalid_request`` error before ``validate_bearer_token`` runs. See
+:doc:`/oauth2/endpoints/resource` for the full rules and how to pass raw
+multi-value parameters from your framework.

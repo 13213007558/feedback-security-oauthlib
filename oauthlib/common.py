@@ -201,15 +201,19 @@ def extract_params(raw):
         except ValueError:
             params = None
     elif hasattr(raw, '__iter__'):
+        if isinstance(raw, dict):
+            return decode_params_utf8(list(raw.items()))
+        # Lists (and other iterables) of 2-tuples must keep their order and
+        # repeated keys; do not route them through dict(...), which would
+        # silently collapse duplicate parameters.
         try:
-            dict(raw)
-        except ValueError:
-            params = None
+            params = list(raw)
         except TypeError:
-            params = None
-        else:
-            params = list(raw.items() if isinstance(raw, dict) else raw)
-            params = decode_params_utf8(params)
+            return None
+        if any(not isinstance(pair, (list, tuple)) or len(pair) != 2
+               for pair in params):
+            return None
+        params = decode_params_utf8(params)
     else:
         params = None
 
@@ -381,6 +385,15 @@ def to_unicode(data, encoding='UTF-8'):
         return str(data, encoding=encoding)
 
     if hasattr(data, '__iter__'):
+        # A list/tuple of 2-tuples represents raw form parameters and must be
+        # preserved element-wise; converting via dict() would collapse
+        # repeated keys before strict multi-value checks can see them.
+        if not isinstance(data, dict) and all(
+            isinstance(pair, (list, tuple)) and len(pair) == 2
+            for pair in data
+        ):
+            return [tuple(to_unicode(element, encoding) for element in pair)
+                    for pair in data]
         try:
             dict(data)
         except TypeError:
@@ -514,6 +527,9 @@ class Request:
             "acr_values": None
         }
         self._params.update(dict(urldecode(self.uri_query)))
+        # The convenience attributes intentionally keep a single (last) value,
+        # but request.decoded_body above retains every repeated pair so strict
+        # multi-value checks can still observe duplicates.
         self._params.update(dict(self.decoded_body or []))
 
     def __getattr__(self, name):

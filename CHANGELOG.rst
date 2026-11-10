@@ -4,6 +4,22 @@ Changelog
 Unreleased:
 ------------------
 OAuth2.0 Provider:
+* ``ResourceEndpoint`` and the preconfigured servers now accept an opt-in
+  ``strict_bearer`` flag. When enabled, a protected-resource request is
+  rejected with ``InvalidRequestError`` (HTTP 400, standard OAuth error body)
+  before ``RequestValidator.validate_bearer_token`` runs if an access token is
+  presented in more than one RFC 6750 carrier (``Authorization`` header, query
+  or form body), even when the values are identical; if the
+  ``access_token`` parameter is repeated within one carrier; if a form-body
+  token uses a method other than ``POST`` or a content type other than
+  ``application/x-www-form-urlencoded`` (a JSON body is not a form carrier);
+  or if the ``Bearer`` header is empty or malformed. Other authentication
+  schemes are ignored and the ``Bearer`` scheme is matched case-insensitively.
+  The default (``strict_bearer=False``) keeps the historical lenient
+  extraction. Raw multi-valued query/form parameters are now retained on
+  ``Request.decoded_body`` instead of being collapsed by an internal
+  ``dict()`` conversion, so frameworks can pass tuple lists without losing
+  duplicates.
 * **Breaking**: #988: PKCE parameters are now validated against RFC 7636
   syntax. ``code_verifier`` must be 43-128 unreserved ASCII characters
   (``[A-Za-z0-9-._~]``) at the token endpoint (rejected with ``invalid_grant``)

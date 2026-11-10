@@ -75,6 +75,20 @@ class ParameterTest(TestCase):
         self.assertIsNone(extract_params(object()))
         self.assertIsNone(extract_params([('')]))
 
+    def test_extract_params_twotuple_keeps_duplicates(self):
+        # Repeated keys must survive extraction; a dict conversion would
+        # silently collapse the two entries into one.
+        duplicated = [('foo', 'bar'), ('foo', 'baz')]
+        self.assertEqual(extract_params(duplicated), duplicated)
+
+    def test_extract_params_generator_keeps_duplicates(self):
+        def gen():
+            yield ('foo', 'bar')
+            yield ('foo', 'baz')
+
+        self.assertEqual(extract_params(gen()),
+                         [('foo', 'bar'), ('foo', 'baz')])
+
     def test_add_params_to_uri(self):
         correct = '{}?{}'.format(URI, PARAMS_FORMENCODED)
         self.assertURLEqual(add_params_to_uri(URI, PARAMS_DICT), correct)
@@ -193,6 +207,15 @@ class RequestTest(TestCase):
     def test_list_body(self):
         r = Request(URI, body=PARAMS_TWOTUPLE)
         self.assertCountEqual(r.decoded_body, PARAMS_TWOTUPLE)
+
+    def test_list_body_keeps_duplicate_parameters(self):
+        body = [('access_token', 'first'), ('access_token', 'second')]
+        r = Request(URI, body=body)
+        # The raw decoded body retains every value for strict checks.
+        self.assertEqual(r.decoded_body, body)
+        self.assertEqual(r.body, body)
+        # The convenience attribute still exposes a single (last) value.
+        self.assertEqual(r.access_token, 'second')
 
     def test_dict_body(self):
         r = Request(URI, body=PARAMS_DICT)

@@ -36,6 +36,7 @@ class Server(
         token_expires_in=None,
         token_generator=None,
         refresh_token_generator=None,
+        strict_bearer=False,
         *args,
         **kwargs,
     ):
@@ -49,6 +50,10 @@ class Server(
         :param token_generator: A function to generate a token from a request.
         :param refresh_token_generator: A function to generate a token from a
                                         request for the refresh token.
+        :param strict_bearer: Reject requests presenting an access token in
+                              more than one carrier or repeating the token
+                              parameter within a carrier, instead of picking
+                              one. Defaults to the lenient legacy behaviour.
         :param kwargs: Extra parameters to pass to authorization-,
                        token-, resource-, and revocation-endpoint constructors.
         """
@@ -87,7 +92,10 @@ class Server(
             default_token_type=self.bearer,
         )
         ResourceEndpoint.__init__(
-            self, default_token="Bearer", token_types={"Bearer": self.bearer}
+            self,
+            default_token="Bearer",
+            token_types={"Bearer": self.bearer},
+            strict_bearer=strict_bearer,
         )
         RevocationEndpoint.__init__(self, request_validator)
         IntrospectEndpoint.__init__(self, request_validator)
@@ -104,6 +112,7 @@ class WebApplicationServer(
         token_generator=None,
         token_expires_in=None,
         refresh_token_generator=None,
+        strict_bearer=False,
         **kwargs,
     ):
         """Construct a new web application server.
@@ -140,7 +149,10 @@ class WebApplicationServer(
             default_token_type=self.bearer,
         )
         ResourceEndpoint.__init__(
-            self, default_token="Bearer", token_types={"Bearer": self.bearer}
+            self,
+            default_token="Bearer",
+            token_types={"Bearer": self.bearer},
+            strict_bearer=strict_bearer,
         )
         RevocationEndpoint.__init__(self, request_validator)
         IntrospectEndpoint.__init__(self, request_validator)
@@ -157,6 +169,7 @@ class MobileApplicationServer(
         token_generator=None,
         token_expires_in=None,
         refresh_token_generator=None,
+        strict_bearer=False,
         **kwargs,
     ):
         """Construct a new implicit grant server.
@@ -183,7 +196,10 @@ class MobileApplicationServer(
             default_token_type=self.bearer,
         )
         ResourceEndpoint.__init__(
-            self, default_token="Bearer", token_types={"Bearer": self.bearer}
+            self,
+            default_token="Bearer",
+            token_types={"Bearer": self.bearer},
+            strict_bearer=strict_bearer,
         )
         RevocationEndpoint.__init__(
             self, request_validator, supported_token_types=["access_token"]
@@ -204,6 +220,7 @@ class LegacyApplicationServer(
         token_generator=None,
         token_expires_in=None,
         refresh_token_generator=None,
+        strict_bearer=False,
         **kwargs,
     ):
         """Construct a resource owner password credentials grant server.
@@ -234,7 +251,10 @@ class LegacyApplicationServer(
             default_token_type=self.bearer,
         )
         ResourceEndpoint.__init__(
-            self, default_token="Bearer", token_types={"Bearer": self.bearer}
+            self,
+            default_token="Bearer",
+            token_types={"Bearer": self.bearer},
+            strict_bearer=strict_bearer,
         )
         RevocationEndpoint.__init__(self, request_validator)
         IntrospectEndpoint.__init__(self, request_validator)
@@ -251,6 +271,7 @@ class BackendApplicationServer(
         token_generator=None,
         token_expires_in=None,
         refresh_token_generator=None,
+        strict_bearer=False,
         **kwargs,
     ):
         """Construct a client credentials grant server.
@@ -277,7 +298,10 @@ class BackendApplicationServer(
             default_token_type=self.bearer,
         )
         ResourceEndpoint.__init__(
-            self, default_token="Bearer", token_types={"Bearer": self.bearer}
+            self,
+            default_token="Bearer",
+            token_types={"Bearer": self.bearer},
+            strict_bearer=strict_bearer,
         )
         RevocationEndpoint.__init__(
             self, request_validator, supported_token_types=["access_token"]
