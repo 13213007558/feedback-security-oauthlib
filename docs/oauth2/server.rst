@@ -277,6 +277,16 @@ the token.
         challenge = django.db.models.CharField(max_length=128)
         challenge_method = django.db.models.CharField(max_length=6)
 
+    When a per-client PKCE migration policy is active (see
+    :doc:`pkce_migration`), also store the policy version stamped on the
+    code so it can later be verified against the policy in force at
+    issuance time:
+
+    .. code-block:: python
+
+        pkce_policy_version = django.db.models.CharField(max_length=64,
+                                                         null=True)
+
 
 3. Implement a validator
 ------------------------

@@ -295,6 +295,16 @@ class RequestValidator:
             - Code Challenge (``request.code_challenge``) and
             - Code Challenge Method (``request.code_challenge_method``)
 
+        To support per-client PKCE migration policies, you MUST additionally
+        associate the code (when present) with:
+            - the policy version (``code["pkce_policy_version"]``)
+
+        The policy version is set by the grant from the
+        :class:`~oauthlib.oauth2.rfc6749.pkce.PkcePolicy` in force when the
+        code is issued.  Storing it with the code lets the token endpoint
+        verify against that revision later, even if the client's current
+        policy has since been tightened or switched off.
+
         To support OIDC, you MUST associate the code with:
             - nonce, if present (``code["nonce"]``)
 
@@ -619,6 +629,62 @@ class RequestValidator:
         .. _`RFC7636`: https://tools.ietf.org/html/rfc7636
         """
         return False
+
+    def get_pkce_policy(self, client_id, request):
+        """Return the per-client PKCE migration policy, if the client is
+        enrolled.
+
+        This is the opt-in entry point for phased PKCE migration.  Return a
+        :class:`~oauthlib.oauth2.rfc6749.pkce.PkcePolicy` to enforce it for
+        this client, or ``None`` (the default) to keep the historical
+        behaviour driven by :meth:`is_pkce_required`.  Only an actual
+        ``PkcePolicy`` instance enables the migration path, so anything
+        else is treated as legacy mode and integrations that do not
+        implement migration keep working unchanged, allowing policies to be
+        rolled out one client at a time.
+
+        The same policy governs both endpoints:
+
+        - At the authorization endpoint it decides whether a
+          ``code_challenge`` is required, which ``code_challenge_method``
+          values are accepted and which policy version is stamped onto the
+          newly issued authorization code.
+        - At the token endpoint it supplies the transition deadline that
+          bounds acceptance of challenge-less codes issued before
+          enrollment.
+
+        :param client_id: Client identifier.
+        :param request: OAuthlib request.
+        :type request: oauthlib.common.Request
+        :rtype: oauthlib.oauth2.rfc6749.pkce.PkcePolicy or None
+
+        Method is used by:
+            - Authorization Code Grant
+        """
+        return None
+
+    def get_code_challenge_policy_version(self, code, request):
+        """Return the PKCE policy version stored with an authorization code.
+
+        The value must be the one previously persisted from
+        ``code["pkce_policy_version"]`` in
+        :meth:`save_authorization_code`.  It records the policy revision in
+        force when the code was issued, independently of the client's
+        current policy, so the token endpoint never re-interprets a stored
+        code under a newer or disabled policy.
+
+        Return ``None`` for codes that were issued without a migration
+        policy (or without a challenge).
+
+        :param code: Authorization code.
+        :param request: OAuthlib request.
+        :type request: oauthlib.common.Request
+        :rtype: str or None
+
+        Method is used by:
+            - Authorization Code Grant - when a PKCE policy is active
+        """
+        return None
 
     def get_code_challenge(self, code, request):
         """Is called for every "token" requests.

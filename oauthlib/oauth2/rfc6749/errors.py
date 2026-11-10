@@ -315,6 +315,20 @@ class InvalidGrantError(OAuth2Error):
     status_code = 400
 
 
+class PkceTransitionExpiredError(InvalidGrantError):
+    """
+    The authorization code was issued before the client was enrolled in a
+    mandatory PKCE policy and therefore carries no ``code_challenge``.  Such
+    codes may only be exchanged within the policy's explicit, time-bounded
+    transition window; once that deadline has passed the code is rejected so
+    that legacy, unbound codes cannot be accepted indefinitely.
+    """
+    error = 'invalid_grant'
+    description = (
+        'Authorization code predates the required PKCE policy and the '
+        'transition period has expired.')
+
+
 class UnauthorizedClientError(OAuth2Error):
     """
     The authenticated client is not authorized to use this authorization

@@ -4,6 +4,22 @@ Changelog
 Unreleased:
 ------------------
 OAuth2.0 Provider:
+* Per-client, phased migration from optional PKCE to mandatory S256.
+  New ``oauthlib.oauth2.rfc6749.pkce`` module with the immutable
+  ``PkcePolicy`` (``PkcePolicy.optional`` / ``PkcePolicy.mandatory_s256``),
+  the ``PkceRejectionMetrics`` reason counters and an injectable clock.
+  ``RequestValidator`` gains ``get_pkce_policy`` and
+  ``get_code_challenge_policy_version``; returning ``None`` (the default)
+  keeps the historical ``is_pkce_required`` behaviour, so existing
+  integrations are unchanged until a client is enrolled. A policy stamps
+  its version onto each issued authorization code (the
+  ``pkce_policy_version`` grant field) and a stored challenge is always
+  verified at the token endpoint even if the policy is later switched off;
+  challenge-less legacy codes are only accepted until
+  ``legacy_no_challenge_accepted_until`` and then fail with
+  ``PkceTransitionExpiredError`` (``invalid_grant``). Rejection counters
+  and logs contain reason codes only; debug request/grant logging now also
+  redacts ``code``, ``code_verifier`` and ``code_challenge``.
 * **Breaking**: #988: PKCE parameters are now validated against RFC 7636
   syntax. ``code_verifier`` must be 43-128 unreserved ASCII characters
   (``[A-Za-z0-9-._~]``) at the token endpoint (rejected with ``invalid_grant``)

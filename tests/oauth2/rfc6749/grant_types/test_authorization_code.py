@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import datetime
 import json
 from unittest import mock
 
@@ -6,6 +7,20 @@ from oauthlib.common import Request
 from oauthlib.oauth2.rfc6749 import errors
 from oauthlib.oauth2.rfc6749.grant_types import (
     AuthorizationCodeGrant, authorization_code,
+)
+from oauthlib.oauth2.rfc6749.pkce import (
+    CHALLENGE_METHOD_DISALLOWED,
+    CHALLENGE_METHOD_UNKNOWN,
+    CHALLENGE_MISSING,
+    CHALLENGE_SYNTAX_INVALID,
+    LEGACY_TRANSITION_EXPIRED,
+    PLAIN,
+    PkcePolicy,
+    PkceRejectionMetrics,
+    S256,
+    VERIFIER_MISMATCH,
+    VERIFIER_MISSING,
+    VERIFIER_SYNTAX_INVALID,
 )
 from oauthlib.oauth2.rfc6749.tokens import BearerToken
 
@@ -620,6 +635,218 @@ class AuthorizationCodeGrantTest(TestCase):
         self.mock_validator.is_origin_allowed.assert_called_once_with(
             'abcdef', 'https://foo.bar', self.request
         )
+
+
+class PkcePolicyGrantTest(TestCase):
+    """Unit tests for the per-client PkcePolicy enforcement path."""
+
+    valid_s256_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+
+    def setUp(self):
+        self.request = Request('http://a.b/path')
+        self.request.scopes = ('hello', 'world')
+        self.request.client = 'batman'
+        self.request.client_id = 'abcdef'
+        self.request.code = '1234'
+        self.request.response_type = 'code'
+        self.request.grant_type = 'authorization_code'
+        self.request.redirect_uri = 'https://a.b/cb'
+
+        self.metrics = PkceRejectionMetrics()
+        self.now = datetime.datetime(2026, 11, 10,
+                                     tzinfo=datetime.timezone.utc)
+        self.clock = mock.Mock(return_value=self.now)
+        self.mock_validator = mock.MagicMock()
+        # A plain MagicMock return value must be treated as "not enrolled".
+        self.assertNotIsInstance(
+            self.mock_validator.get_pkce_policy.return_value, PkcePolicy)
+        self.mock_validator.authenticate_client.side_effect = self.set_client
+        self.auth = AuthorizationCodeGrant(
+            request_validator=self.mock_validator,
+            pkce_metrics=self.metrics, clock=self.clock)
+
+    def set_client(self, request):
+        request.client = mock.MagicMock()
+        request.client.client_id = request.client_id
+        return True
+
+    def set_policy(self, policy):
+        self.mock_validator.get_pkce_policy.return_value = policy
+
+    # Authorization endpoint ---------------------------------------------------
+    def test_mandatory_policy_requires_challenge(self):
+        self.set_policy(PkcePolicy.mandatory_s256())
+        self.assertRaises(
+            errors.MissingCodeChallengeError,
+            self.auth.validate_authorization_request, self.request)
+        self.assertEqual(self.metrics.get(CHALLENGE_MISSING), 1)
+
+    def test_mandatory_policy_rejects_plain_method(self):
+        self.set_policy(PkcePolicy.mandatory_s256())
+        self.request.code_challenge = valid_code_verifier
+        self.request.code_challenge_method = PLAIN
+        self.assertRaises(
+            errors.UnsupportedCodeChallengeMethodError,
+            self.auth.validate_authorization_request, self.request)
+        self.assertEqual(self.metrics.get(CHALLENGE_METHOD_DISALLOWED), 1)
+
+    def test_mandatory_policy_rejects_implicit_plain_default(self):
+        # Omitting the method must not create a silent plain downgrade.
+        self.set_policy(PkcePolicy.mandatory_s256())
+        self.request.code_challenge = self.valid_s256_challenge
+        self.assertRaises(
+            errors.UnsupportedCodeChallengeMethodError,
+            self.auth.validate_authorization_request, self.request)
+        self.assertEqual(self.metrics.get(CHALLENGE_METHOD_DISALLOWED), 1)
+
+    def test_mandatory_policy_rejects_unknown_method(self):
+        self.set_policy(PkcePolicy.mandatory_s256())
+        self.request.code_challenge = self.valid_s256_challenge
+        self.request.code_challenge_method = 'rot13'
+        self.assertRaises(
+            errors.UnsupportedCodeChallengeMethodError,
+            self.auth.validate_authorization_request, self.request)
+        self.assertEqual(self.metrics.get(CHALLENGE_METHOD_UNKNOWN), 1)
+
+    def test_mandatory_policy_rejects_bad_challenge_length(self):
+        self.set_policy(PkcePolicy.mandatory_s256())
+        self.request.code_challenge = 'a' * 44
+        self.request.code_challenge_method = S256
+        self.assertRaises(
+            errors.InvalidRequestError,
+            self.auth.validate_authorization_request, self.request)
+        self.assertEqual(self.metrics.get(CHALLENGE_SYNTAX_INVALID), 1)
+
+    def test_mandatory_policy_accepts_s256(self):
+        policy = PkcePolicy.mandatory_s256(version='s256-v9')
+        self.set_policy(policy)
+        self.request.code_challenge = self.valid_s256_challenge
+        self.request.code_challenge_method = S256
+        _scopes, info = self.auth.validate_authorization_request(self.request)
+        self.assertEqual(info['code_challenge_method'], S256)
+        self.assertIs(self.request.pkce_policy, policy)
+        self.assertEqual(self.metrics.snapshot(), {})
+
+    def test_optional_policy_allows_missing_challenge_and_plain(self):
+        self.set_policy(PkcePolicy.optional())
+        _scopes, info = self.auth.validate_authorization_request(self.request)
+        self.assertNotIn('code_challenge', info)
+
+        self.request.code_challenge = valid_code_challenge_plain
+        self.request.code_challenge_method = PLAIN
+        _scopes, info = self.auth.validate_authorization_request(self.request)
+        self.assertEqual(info['code_challenge_method'], PLAIN)
+
+    def test_authorization_code_stamps_policy_version(self):
+        self.set_policy(PkcePolicy.mandatory_s256(version='stamped-v1'))
+        self.request.code_challenge = self.valid_s256_challenge
+        self.request.code_challenge_method = S256
+        self.auth.validate_authorization_request(self.request)
+        grant = self.auth.create_authorization_code(self.request)
+        self.assertEqual(grant['pkce_policy_version'], 'stamped-v1')
+
+    def test_legacy_mode_does_not_stamp_policy_version(self):
+        # get_pkce_policy returns a non-policy mock -> legacy path.
+        self.request.code_challenge = self.valid_s256_challenge
+        self.request.code_challenge_method = S256
+        self.auth.validate_authorization_request(self.request)
+        grant = self.auth.create_authorization_code(self.request)
+        self.assertNotIn('pkce_policy_version', grant)
+
+    # Token endpoint -----------------------------------------------------------
+    def configure_bound_code(self, method=S256, challenge=None):
+        self.mock_validator.get_code_challenge.return_value = \
+            challenge or self.valid_s256_challenge
+        self.mock_validator.get_code_challenge_method.return_value = method
+        self.mock_validator.get_code_challenge_policy_version.return_value = \
+            'stamped-v1'
+    def test_bound_challenge_still_verified_after_policy_disabled(self):
+        # The token-side policy object can even change; a stored challenge
+        # remains binding regardless of today's configuration.
+        self.set_policy(PkcePolicy.mandatory_s256(version='new-v2'))
+        # Store an unrelated S256 challenge so the RFC-example verifier cannot
+        # match, proving verification uses the record rather than current config.
+        self.configure_bound_code(challenge='a' * 43)
+        self.request.code_verifier = valid_code_verifier
+        self.assertRaises(
+            errors.InvalidGrantError,
+            self.auth.validate_token_request, self.request)
+        self.assertEqual(self.metrics.get(VERIFIER_MISMATCH), 1)
+        self.mock_validator.invalidate_authorization_code.assert_not_called()
+
+    def test_bound_code_missing_verifier_is_counted(self):
+        self.set_policy(PkcePolicy.mandatory_s256())
+        self.configure_bound_code()
+        self.request.code_verifier = None
+        self.assertRaises(
+            errors.MissingCodeVerifierError,
+            self.auth.validate_token_request, self.request)
+        self.assertEqual(self.metrics.get(VERIFIER_MISSING), 1)
+
+    def test_bound_code_invalid_verifier_syntax_is_counted(self):
+        self.set_policy(PkcePolicy.mandatory_s256())
+        self.configure_bound_code(method=PLAIN,
+                                  challenge=valid_code_challenge_plain)
+        self.request.code_verifier = 'short'
+        self.assertRaises(
+            errors.InvalidGrantError,
+            self.auth.validate_token_request, self.request)
+        self.assertEqual(self.metrics.get(VERIFIER_SYNTAX_INVALID), 1)
+
+    def test_bound_code_without_stored_policy_version_is_rejected(self):
+        self.set_policy(PkcePolicy.mandatory_s256())
+        self.configure_bound_code()
+        self.mock_validator.get_code_challenge_policy_version.return_value = \
+            None
+        self.request.code_verifier = valid_code_verifier
+        self.assertRaises(
+            errors.InvalidGrantError,
+            self.auth.validate_token_request, self.request)
+        # The challenge itself is never verified when the binding record is
+        # missing, so no verifier mismatch counter is produced.
+        self.assertEqual(self.metrics.get(VERIFIER_MISMATCH), 0)
+
+    def test_legacy_code_accepted_within_transition_window(self):
+        policy = PkcePolicy.mandatory_s256(
+            legacy_no_challenge_accepted_until=self.now +
+            datetime.timedelta(minutes=1))
+        self.set_policy(policy)
+        self.mock_validator.get_code_challenge.return_value = None
+        self.request.code_verifier = None
+        self.auth.validate_token_request(self.request)
+        self.assertEqual(self.metrics.snapshot(), {})
+
+    def test_legacy_code_rejected_after_transition_window(self):
+        policy = PkcePolicy.mandatory_s256(
+            legacy_no_challenge_accepted_until=self.now -
+            datetime.timedelta(minutes=1))
+        self.set_policy(policy)
+        self.mock_validator.get_code_challenge.return_value = None
+        self.request.code_verifier = None
+        self.assertRaises(
+            errors.PkceTransitionExpiredError,
+            self.auth.validate_token_request, self.request)
+        self.assertEqual(self.metrics.get(LEGACY_TRANSITION_EXPIRED), 1)
+
+    def test_no_deadline_means_legacy_code_never_accepted(self):
+        self.set_policy(PkcePolicy.mandatory_s256())
+        self.mock_validator.get_code_challenge.return_value = None
+        self.request.code_verifier = None
+        self.assertRaises(
+            errors.PkceTransitionExpiredError,
+            self.auth.validate_token_request, self.request)
+
+    def test_verifier_on_challenge_less_code_is_downgrade(self):
+        self.set_policy(PkcePolicy.mandatory_s256(
+            legacy_no_challenge_accepted_until=self.now +
+            datetime.timedelta(days=1)))
+        self.mock_validator.get_code_challenge.return_value = None
+        self.request.code_verifier = valid_code_verifier
+        self.assertRaises(
+            errors.InvalidGrantError,
+            self.auth.validate_token_request, self.request)
+        self.assertEqual(self.metrics.get(VERIFIER_MISMATCH), 1)
+        self.assertEqual(self.metrics.get(LEGACY_TRANSITION_EXPIRED), 0)
 
 
 class CustomDefaultResponseModeTest(TestCase):

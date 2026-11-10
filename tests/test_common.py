@@ -272,6 +272,30 @@ class RequestTest(TestCase):
         r = Request(URI, body='token=')
         self.assertIn('token=', repr(r))
 
+    def test_pkce_and_authorization_code_bodies_are_sanitized(self):
+        """PKCE secrets and authorization codes must never reach debug logs."""
+        secret_verifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk'
+        secret_challenge = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM'
+        secret_code = 'SplxlOBeZQQYbYS6WxSbIA'
+        payload = (
+            'grant_type=authorization_code'
+            '&code=%s'
+            '&code_verifier=%s'
+            '&code_challenge=%s'
+            '&code_challenge_method=S256'
+            '&client_id=foo'
+        ) % (secret_code, secret_verifier, secret_challenge)
+        rendered = repr(Request(URI, body=payload))
+        self.assertNotIn(secret_verifier, rendered)
+        self.assertNotIn(secret_challenge, rendered)
+        self.assertNotIn(secret_code, rendered)
+        self.assertIn('code=<SANITIZED>', rendered)
+        self.assertIn('code_verifier=<SANITIZED>', rendered)
+        self.assertIn('code_challenge=<SANITIZED>', rendered)
+        # Non-secret parameters remain visible for debugging.
+        self.assertIn('client_id=foo', rendered)
+        self.assertIn('code_challenge_method=S256', rendered)
+
     def test_sanitizing_is_linear_time(self):
         """Adversarial bodies must not cause catastrophic backtracking."""
         for body in ('a' * 10000, 'a' * 10000 + '=', 'token' * 5000,

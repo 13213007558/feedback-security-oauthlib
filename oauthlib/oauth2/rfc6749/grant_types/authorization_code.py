@@ -12,6 +12,21 @@ import re
 from oauthlib import common
 
 from .. import errors
+from ..pkce import (
+    CHALLENGE_METHOD_DISALLOWED,
+    CHALLENGE_METHOD_UNKNOWN,
+    CHALLENGE_MISSING,
+    CHALLENGE_SYNTAX_INVALID,
+    LEGACY_TRANSITION_EXPIRED,
+    PLAIN,
+    S256,
+    VERIFIER_MISMATCH,
+    VERIFIER_MISSING,
+    VERIFIER_SYNTAX_INVALID,
+    PkcePolicy,
+    PkceRejectionMetrics,
+    utcnow,
+)
 from .base import GrantTypeBase, revalidate_response_mode
 
 log = logging.getLogger(__name__)
@@ -191,6 +206,43 @@ class AuthorizationCodeGrant(GrantTypeBase):
         'S256': code_challenge_method_s256
     }
 
+    def __init__(self, request_validator=None, *, pkce_metrics=None,
+                 clock=None, **kwargs):
+        """
+        :param request_validator: A :class:`RequestValidator` instance.
+        :param pkce_metrics: Optional :class:`PkceRejectionMetrics` used to
+            expose per-reason rejection counters for clients enrolled in a
+            :class:`~oauthlib.oauth2.rfc6749.pkce.PkcePolicy`.  A fresh
+            instance is created when omitted.
+        :param clock: Zero-argument callable returning a timezone-aware
+            ``datetime`` used for the transition deadline.  Inject a
+            controllable clock for deterministic tests; it defaults to the
+            wall clock in UTC.
+        """
+        super().__init__(request_validator=request_validator, **kwargs)
+        self.pkce_metrics = pkce_metrics or PkceRejectionMetrics()
+        self._clock = clock or utcnow
+
+    def _reject_pkce(self, reason, error, request, **error_kwargs):
+        """Record an observable rejection reason and raise the OAuth2 error.
+
+        Only the reason code and public client identity are recorded. The
+        challenge, verifier and authorization code are never logged.
+        """
+        self.pkce_metrics.record(reason, getattr(request, 'client_id', None))
+        raise error(request=request, **error_kwargs)
+
+    def _get_pkce_policy(self, request):
+        """Return the client's enrolled policy, or None for legacy mode.
+
+        Only an actual :class:`PkcePolicy` enables the migration path, so a
+        validator that does not implement the method (or a test double) keeps
+        the historical ``is_pkce_required`` behaviour unchanged.
+        """
+        policy = self.request_validator.get_pkce_policy(
+            request.client_id, request)
+        return policy if isinstance(policy, PkcePolicy) else None
+
     def create_authorization_code(self, request):
         """
         Generates an authorization grant represented as a dictionary.
@@ -201,8 +253,13 @@ class AuthorizationCodeGrant(GrantTypeBase):
         grant = {'code': common.generate_token()}
         if hasattr(request, 'state') and request.state:
             grant['state'] = request.state
+        pkce_policy = getattr(request, 'pkce_policy', None)
+        if pkce_policy is not None and request.code_challenge is not None:
+            # Stamp the policy revision so the token endpoint verifies the
+            # code against the policy in force at issuance time.
+            grant['pkce_policy_version'] = pkce_policy.version
         log.debug('Created authorization code grant %r for request %r.',
-                  grant, request)
+                  common.log_safe(grant), request)
         return grant
 
     def create_authorization_response(self, request, token_handler):
@@ -314,7 +371,7 @@ class AuthorizationCodeGrant(GrantTypeBase):
         self._validate_response_mode(request)
         if 'access_token' in grant:
             self.request_validator.save_token(grant, request)
-        log.debug('Saving grant %r for %r.', grant, request)
+        log.debug('Saving grant %r for %r.', common.log_safe(grant), request)
         self.request_validator.save_authorization_code(
             request.client_id, grant, request)
         return self.prepare_authorization_response(
@@ -445,26 +502,13 @@ class AuthorizationCodeGrant(GrantTypeBase):
 
         # OPTIONAL. Validate PKCE request or reply with "error"/"invalid_request"
         # https://tools.ietf.org/html/rfc6749#section-4.4.1
-        if self.request_validator.is_pkce_required(request.client_id, request) is True and request.code_challenge is None:
-            raise errors.MissingCodeChallengeError(request=request)
-
-        if request.code_challenge is not None:
-
-            # OPTIONAL, defaults to "plain" if not present in the request.
-            if request.code_challenge_method is None:
-                request.code_challenge_method = "plain"
-
-            if request.code_challenge_method not in self._code_challenge_methods:
-                raise errors.UnsupportedCodeChallengeMethodError(request=request)
-
-            # RFC 7636 Section 4.2: check the code_challenge syntax
-            if not is_valid_code_challenge(request.code_challenge, request.code_challenge_method):
-                raise errors.InvalidRequestError(
-                    description='Invalid code_challenge parameter.', request=request)
-
-            request_info["code_challenge"] = request.code_challenge
-
-            request_info["code_challenge_method"] = request.code_challenge_method
+        pkce_policy = self._get_pkce_policy(request)
+        request.pkce_policy = pkce_policy
+        if pkce_policy is not None:
+            request_info.update(self._validate_pkce_policy_authorization(
+                request, pkce_policy))
+        else:
+            request_info.update(self._validate_pkce_legacy_authorization(request))
 
         # OPTIONAL. The scope of the access request as described by Section 3.3
         # https://tools.ietf.org/html/rfc6749#section-3.3
@@ -517,44 +561,15 @@ class AuthorizationCodeGrant(GrantTypeBase):
                       request.client_id, request.client, request.scopes)
             raise errors.InvalidGrantError(request=request)
 
-        # OPTIONAL. Validate PKCE code_verifier
-        challenge = self.request_validator.get_code_challenge(request.code, request)
-
-        if challenge is not None:
-            if request.code_verifier is None:
-                raise errors.MissingCodeVerifierError(request=request)
-
-            # RFC 7636 Section 4.1: check the code_verifier syntax
-            if not is_valid_code_verifier(request.code_verifier):
-                raise errors.InvalidGrantError(
-                    description='Invalid code_verifier parameter.', request=request)
-
-            challenge_method = self.request_validator.get_code_challenge_method(request.code, request)
-            if challenge_method is None:
-                raise errors.InvalidGrantError(request=request, description="Challenge method not found")
-
-            if challenge_method not in self._code_challenge_methods:
-                raise errors.ServerError(
-                    description="code_challenge_method {} is not supported.".format(challenge_method),
-                    request=request
-                )
-
-            if not self.validate_code_challenge(challenge,
-                                                challenge_method,
-                                                request.code_verifier):
-                log.debug('request provided a invalid code_verifier.')
-                raise errors.InvalidGrantError(request=request)
-        elif request.code_verifier is not None:
-            # RFC 9700 Section 4.8.2: a code_verifier MUST NOT be accepted
-            # when the authorization request had no code_challenge, as this
-            # indicates an authorization code injection / PKCE downgrade.
-            raise errors.InvalidGrantError(
-                request=request,
-                description='code_verifier provided but no code_challenge was associated with this authorization code.')
-        elif self.request_validator.is_pkce_required(request.client_id, request) is True:
-            if request.code_verifier is None:
-                raise errors.MissingCodeVerifierError(request=request)
-            raise errors.InvalidGrantError(request=request, description="Challenge not found")
+        # OPTIONAL. Validate PKCE code_verifier. Clients enrolled in a
+        # migration policy are verified against the policy stamped on the
+        # code at issuance time; everyone else keeps the legacy behaviour.
+        pkce_policy = self._get_pkce_policy(request)
+        request.pkce_policy = pkce_policy
+        if pkce_policy is not None:
+            self._validate_pkce_policy_token(request)
+        else:
+            self._validate_pkce_legacy_token(request)
 
         for attr in ('user', 'scopes'):
             if getattr(request, attr, None) is None:
@@ -583,6 +598,176 @@ class AuthorizationCodeGrant(GrantTypeBase):
 
         for validator in self.custom_validators.post_token:
             validator(request)
+
+    def _validate_pkce_legacy_authorization(self, request):
+        """Historical, opt-in PKCE checks for clients without a policy."""
+        pkce_info = {}
+        if self.request_validator.is_pkce_required(
+                request.client_id, request) is True and request.code_challenge is None:
+            raise errors.MissingCodeChallengeError(request=request)
+
+        if request.code_challenge is not None:
+
+            # OPTIONAL, defaults to "plain" if not present in the request.
+            if request.code_challenge_method is None:
+                request.code_challenge_method = PLAIN
+
+            if request.code_challenge_method not in self._code_challenge_methods:
+                raise errors.UnsupportedCodeChallengeMethodError(request=request)
+
+            # RFC 7636 Section 4.2: check the code_challenge syntax
+            if not is_valid_code_challenge(request.code_challenge, request.code_challenge_method):
+                raise errors.InvalidRequestError(
+                    description='Invalid code_challenge parameter.', request=request)
+
+            pkce_info["code_challenge"] = request.code_challenge
+            pkce_info["code_challenge_method"] = request.code_challenge_method
+        return pkce_info
+
+    def _validate_pkce_policy_authorization(self, request, pkce_policy):
+        """Enforce the client's current policy before any code is issued."""
+        if request.code_challenge is None:
+            if pkce_policy.require_challenge:
+                self._reject_pkce(
+                    CHALLENGE_MISSING,
+                    errors.MissingCodeChallengeError, request)
+            return {}
+
+        method = request.code_challenge_method
+        if method is None:
+            # RFC 7636 defaults a missing method to "plain". A policy that
+            # does not allow plain must reject that implicit downgrade rather
+            # than silently accepting it.
+            if pkce_policy.allows_method(PLAIN):
+                method = PLAIN
+            else:
+                self._reject_pkce(
+                    CHALLENGE_METHOD_DISALLOWED,
+                    errors.UnsupportedCodeChallengeMethodError, request)
+        elif not pkce_policy.allows_method(method):
+            reason = (CHALLENGE_METHOD_UNKNOWN
+                      if method not in self._code_challenge_methods
+                      else CHALLENGE_METHOD_DISALLOWED)
+            self._reject_pkce(
+                reason, errors.UnsupportedCodeChallengeMethodError, request)
+
+        if not is_valid_code_challenge(request.code_challenge, method):
+            self._reject_pkce(
+                CHALLENGE_SYNTAX_INVALID, errors.InvalidRequestError, request,
+                description='Invalid code_challenge parameter.')
+
+        request.code_challenge_method = method
+        return {
+            "code_challenge": request.code_challenge,
+            "code_challenge_method": method,
+        }
+
+    def _validate_pkce_legacy_token(self, request):
+        """Historical code_verifier checks for clients without a policy."""
+        challenge = self.request_validator.get_code_challenge(
+            request.code, request)
+
+        if challenge is not None:
+            if request.code_verifier is None:
+                raise errors.MissingCodeVerifierError(request=request)
+
+            # RFC 7636 Section 4.1: check the code_verifier syntax
+            if not is_valid_code_verifier(request.code_verifier):
+                raise errors.InvalidGrantError(
+                    description='Invalid code_verifier parameter.',
+                    request=request)
+
+            challenge_method = self.request_validator.get_code_challenge_method(request.code, request)
+            if challenge_method is None:
+                raise errors.InvalidGrantError(request=request, description="Challenge method not found")
+
+            if challenge_method not in self._code_challenge_methods:
+                raise errors.ServerError(
+                    description="code_challenge_method {} is not supported.".format(challenge_method),
+                    request=request
+                )
+
+            if not self.validate_code_challenge(challenge,
+                                                challenge_method,
+                                                request.code_verifier):
+                log.debug('request provided a invalid code_verifier.')
+                raise errors.InvalidGrantError(request=request)
+        elif request.code_verifier is not None:
+            # RFC 9700 Section 4.8.2: a code_verifier MUST NOT be accepted
+            # when the authorization request had no code_challenge, as this
+            # indicates an authorization code injection / PKCE downgrade.
+            raise errors.InvalidGrantError(
+                request=request,
+                description='code_verifier provided but no code_challenge was associated with this authorization code.')
+        elif self.request_validator.is_pkce_required(request.client_id, request) is True:
+            if request.code_verifier is None:
+                raise errors.MissingCodeVerifierError(request=request)
+            raise errors.InvalidGrantError(request=request, description="Challenge not found")
+
+    def _validate_pkce_policy_token(self, request):
+        """Verify a code against the policy record stored with it.
+
+        A stored challenge is always verified, regardless of today's policy,
+        so switching the policy off cannot bypass yesterday's challenge.
+        Codes without a challenge only survive inside the policy's explicit,
+        time-bounded transition window.
+        """
+        challenge = self.request_validator.get_code_challenge(
+            request.code, request)
+
+        if challenge is None:
+            if request.code_verifier is not None:
+                # RFC 9700 Section 4.8.2: never accept a verifier for a code
+                # that was issued without a challenge (downgrade / injection).
+                self._reject_pkce(
+                    VERIFIER_MISMATCH, errors.InvalidGrantError, request,
+                    description='code_verifier provided but no code_challenge was associated with this authorization code.')
+            if not request.pkce_policy.allows_legacy_no_challenge(
+                    self._clock()):
+                self._reject_pkce(
+                    LEGACY_TRANSITION_EXPIRED,
+                    errors.PkceTransitionExpiredError, request)
+            return
+
+        # The challenge recorded at issuance is binding even if the client's
+        # current policy has since changed or been disabled.
+        if request.code_verifier is None:
+            self._reject_pkce(
+                VERIFIER_MISSING, errors.MissingCodeVerifierError, request)
+
+        if not is_valid_code_verifier(request.code_verifier):
+            self._reject_pkce(
+                VERIFIER_SYNTAX_INVALID, errors.InvalidGrantError, request,
+                description='Invalid code_verifier parameter.')
+
+        challenge_method = self.request_validator.get_code_challenge_method(
+            request.code, request)
+        if challenge_method is None:
+            raise errors.InvalidGrantError(
+                request=request, description="Challenge method not found")
+        if challenge_method not in self._code_challenge_methods:
+            raise errors.ServerError(
+                description="code_challenge_method {} is not supported.".format(
+                    challenge_method),
+                request=request)
+
+        # The code is bound to the policy revision in force at issuance.
+        # A missing version means the challenge was stored without the
+        # migration record, which a policy-enabled client must not trust.
+        stored_version = self.request_validator \
+            .get_code_challenge_policy_version(request.code, request)
+        if not isinstance(stored_version, str) or not stored_version:
+            raise errors.InvalidGrantError(
+                request=request,
+                description="Stored PKCE policy version not found for this "
+                            "authorization code.")
+
+        if not self.validate_code_challenge(challenge,
+                                            challenge_method,
+                                            request.code_verifier):
+            log.debug('request provided a invalid code_verifier.')
+            self._reject_pkce(
+                VERIFIER_MISMATCH, errors.InvalidGrantError, request)
 
     def validate_code_challenge(self, challenge, challenge_method, verifier):
         if challenge_method in self._code_challenge_methods:

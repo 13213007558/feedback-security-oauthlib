@@ -47,6 +47,7 @@ from .rfc6749.errors import (
     MissingTokenError,
     MissingTokenTypeError,
     OAuth2Error,
+    PkceTransitionExpiredError,
     ServerError,
     TemporarilyUnavailableError,
     TokenExpiredError,
@@ -62,6 +63,19 @@ from .rfc6749.grant_types import (
     ImplicitGrant,
     RefreshTokenGrant,
     ResourceOwnerPasswordCredentialsGrant,
+)
+from .rfc6749.pkce import (
+    CHALLENGE_METHOD_DISALLOWED,
+    CHALLENGE_METHOD_UNKNOWN,
+    CHALLENGE_MISSING,
+    CHALLENGE_SYNTAX_INVALID,
+    LEGACY_TRANSITION_EXPIRED,
+    PkcePolicy,
+    PkceRejectionMetrics,
+    S256,
+    VERIFIER_MISMATCH,
+    VERIFIER_MISSING,
+    VERIFIER_SYNTAX_INVALID,
 )
 from .rfc6749.request_validator import RequestValidator
 from .rfc6749.tokens import BearerToken, OAuth2Token

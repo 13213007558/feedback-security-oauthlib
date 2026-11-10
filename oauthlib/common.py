@@ -33,7 +33,9 @@ UNICODE_ASCII_CHARACTER_SET = ('abcdefghijklmnopqrstuvwxyz'
 CLIENT_ID_CHARACTER_SET = (r' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMN'
                            'OPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}')
 
-SANITIZE_KEY_PATTERN = re.compile(r'password|token', re.IGNORECASE)
+SANITIZE_KEY_PATTERN = re.compile(
+    r'password|token|^code_verifier$|^code_challenge$|^code$',
+    re.IGNORECASE)
 INVALID_HEX_PATTERN = re.compile(r'%[^0-9A-Fa-f]|%[0-9A-Fa-f][^0-9A-Fa-f]')
 
 always_safe = ('ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -398,7 +400,12 @@ def to_unicode(data, encoding='UTF-8'):
 
 
 def _sanitize_body(body):
-    """Redact values of parameters whose name mentions password or token.
+    """Redact values of sensitive parameters.
+
+    Covers credentials (``password``, anything named ``token``) and the
+    PKCE / authorization-code secrets (``code_verifier``,
+    ``code_challenge`` and the bare ``code`` authorization grant), so none
+    of them can leak through a debug ``repr`` of a :class:`Request`.
 
     Linear-time replacement for the former SANITIZE_PATTERN regex, whose
     backtracking made ``repr(Request)`` pathological on adversarial bodies

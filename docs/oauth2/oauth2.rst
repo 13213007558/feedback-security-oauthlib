@@ -7,6 +7,7 @@ OAuth 2.0
    security
    clients/client
    server
+   pkce_migration
    endpoints/endpoints
    grants/grants
    tokens/tokens
